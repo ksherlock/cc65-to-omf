@@ -123,6 +123,20 @@ static void convert_expression_helper(FILE *f, std::vector<uint8_t> &omf, unsign
 	if ((op & 0xc0) == 0) {
 		// binary ops
 
+		// special case -- if this is a my_segment + literal
+		// it can be converted to an OMF REL.
+		if (op == EXPR_PLUS) {
+			long pos = ftell(f);
+			if (Read8(f) == EXPR_SECTION && Read8(f) == segno && Read8(f) == EXPR_LITERAL) {
+				uint32_t offset = Read32(f);
+				omf.push_back(0x87);
+				push_back_32(omf, offset);
+				return;
+			}
+			fseek(f, pos, SEEK_SET);
+		} 
+
+
 		convert_expression_helper(f, omf, segno); // left
 		convert_expression_helper(f, omf, segno); // right
 
