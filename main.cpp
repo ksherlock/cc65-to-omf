@@ -222,6 +222,20 @@ void read_exports(FILE *f, long size) {
 	}
 }
 
+void flush_pending(std::vector<uint8_t> &omf, std::vector<uint8_t> &pending) {
+	if (!pending.empty()) {
+		auto n = pending.size();
+		if (n <= 0xdf) {
+			omf.push_back(n);
+		} else {
+			omf.push_back(0xf2); // lconst
+			push_back_32(omf, n);
+		}
+		omf.insert(omf.end(), pending.begin(), pending.end());
+		pending.clear();
+	}
+}
+
 void process_segment(FILE *f, int segno) {
 
 	uint32_t size = Read32(f);
@@ -237,6 +251,9 @@ void process_segment(FILE *f, int segno) {
 	auto &seg = Segments[segno];
 	auto &omf = seg.omf;
 	auto &exports = seg.exports;
+
+
+	std::vector<uint8_t> pending;
 
 	// literal value exports at the front.
 	while(!exports.empty()) {
@@ -265,6 +282,8 @@ void process_segment(FILE *f, int segno) {
 		while (next_export == pc) {
 			auto &e = exports.back();
 
+			flush_pending(omf, pending);
+
 			push_back_global(omf, e.name, 0, 'N', false);
 			exports.pop_back();
 
@@ -276,9 +295,8 @@ void process_segment(FILE *f, int segno) {
 			case FRAG_LITERAL:
 				n = ReadVar(f);
 				// n bytes of data...
-				// TODO - cc65/ca65 likes 1-byte literals.
-				// should merge them together.
 				if (n == 0) break;
+				#if 0
 				if (n <= 0xdf) {
 					omf.push_back(n);
 				} else {
@@ -289,10 +307,18 @@ void process_segment(FILE *f, int segno) {
 				for (unsigned i = 0; i < n; ++i)
 					omf.push_back(0x00); //
 				fread(omf.data() + pos, 1, n, f);
+				#else
+
+				pos = pending.size();
+				pending.resize(pos + n);
+				fread(pending.data() + pos, 1, n, f);
+				#endif
 				pc += n;
 				break;
 
 			case FRAG_FILL:
+				flush_pending(omf, pending);
+
 				n = ReadVar(f);
 				omf.push_back(0xf1); // DS
 				push_back_32(omf, n);
@@ -301,6 +327,8 @@ void process_segment(FILE *f, int segno) {
 
 			case FRAG_EXPR:
 			case FRAG_SEXPR:
+				flush_pending(omf, pending);
+
 				convert_expression(f, type & FRAG_BYTEMASK, omf, segno);
 				pc += type & FRAG_BYTEMASK;
 				break;
@@ -308,7 +336,7 @@ void process_segment(FILE *f, int segno) {
 		skip_info_list(f);
 	}
 
-
+	flush_pending(omf, pending);
 
 	// trailing exports.
 	while (next_export == pc) {
@@ -325,7 +353,9 @@ void process_segment(FILE *f, int segno) {
 
 	if (pc != expect_pc) errx(1, "PC Error");
 
-	omf.push_back(0x00); // end of segment opcode.
+	if (omf.size()) {
+		omf.push_back(0x00); // end of segment opcode.
+	}
 
 }
 
