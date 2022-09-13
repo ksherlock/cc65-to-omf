@@ -36,11 +36,7 @@
 #include <string.h>
 #include <err.h>
 
-/* common */
-#include "xmalloc.h"
 
-/* ar65 */
-#include "error.h"
 #include "fileio.h"
 
 
@@ -107,8 +103,33 @@ unsigned long ReadVar (FILE* F)
     return V;
 }
 
+std::string ReadString(FILE *f)
+{
+    std::string rv;
+    unsigned n = ReadVar(f);
+
+    rv.reserve(n);
+
+    // as of c++17, can write to std::string.data()
+
+    #if __cplusplus >= 201703L
+    rv.resize(n);
+    ReadData(f, rv.data(), n);
+    #else
+    char buffer[256];
+    while(n) {
+        unsigned size = n > 256 ? 256 : n;
+        ReadData(f, buffer, size);
+        rv.append(buffer, buffer + size);
+        n -= size;
+    }
+    #endif
+
+    return rv;
+}
 
 
+#if 0
 char* ReadStr (FILE* F)
 /* Read a string from the file (the memory will be malloc'ed) */
 {
@@ -124,13 +145,13 @@ char* ReadStr (FILE* F)
     return S;
 }
 
-
+#endif
 
 void* ReadData (FILE* F, void* Data, unsigned Size)
 /* Read data from the file */
 {
     if (fread (Data, 1, Size, F) != Size) {
-        Error ("Read error (file corrupt?)");
+        errx(1, "Read error (file corrupt?)");
     }
     return Data;
 }

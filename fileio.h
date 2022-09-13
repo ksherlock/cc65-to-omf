@@ -41,6 +41,8 @@
 #include <stdio.h>
 #include <stdint.h>
 
+#include <string>
+
 
 
 /*****************************************************************************/
@@ -60,12 +62,16 @@ unsigned long Read32 (FILE* F);
 unsigned long ReadVar (FILE* F);
 /* Read a variable size value from the file */
 
+
+std::string ReadString (FILE* F);
+
+#if 0
 char* ReadStr (FILE* F);
 /* Read a string from the file (the memory will be malloc'ed) */
+#endif
 
 void* ReadData (FILE* F, void* Data, unsigned Size);
 /* Read data from the file */
-
 
 
 /* End of fileio.h */
