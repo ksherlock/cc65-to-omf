@@ -49,6 +49,7 @@
 /*                                   Code                                    */
 /*****************************************************************************/
 
+int Peek8 (FILE *F);
 
 unsigned Read8 (FILE* F);
 /* Read an 8 bit value from the file */

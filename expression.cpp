@@ -19,9 +19,14 @@
 // Expr(section) or Expr(+, Expression(section), Expression(literal))
 
 
+static void omf_mask(std::vector<uint8_t> &omf, uint32_t mask) {
+	omf.push_back(0x81); // Literal
+	push_back_32(omf, mask);
+	omf.push_back(0x12); // AND
+}
 
 
-static void convert_expression_helper(FILE *f, std::vector<uint8_t> &omf, unsigned segno) {
+static void convert_expression_helper(FILE *f, std::vector<uint8_t> &omf, unsigned size, unsigned segno) {
 
 	unsigned n;
 	unsigned op = Read8(f);
@@ -63,8 +68,8 @@ static void convert_expression_helper(FILE *f, std::vector<uint8_t> &omf, unsign
 	if ((op & 0xc0) == 0x40) {
 		// unary
 		std::vector<uint8_t> scratch;
-		convert_expression_helper(f, omf, segno); // left
-		convert_expression_helper(f, scratch, segno); // right - ignored.
+		convert_expression_helper(f, omf, size, segno); // left
+		convert_expression_helper(f, scratch, size, segno); // right - ignored.
 
 		switch(op) {
 			case EXPR_UNARY_MINUS:
@@ -80,39 +85,68 @@ static void convert_expression_helper(FILE *f, std::vector<uint8_t> &omf, unsign
 				break;
 
 			case EXPR_BYTE0:
-				// x & 0xff, ie, nop it.
-				break;				
+				// e & 0xff, ie, nop it.
+				if (size > 1) omf_mask(omf, 0xff);
+				break;
 
 			case EXPR_BYTE1:
-				// (x >> 8) & 0xff
+				// (e >> 8) & 0xff
 				omf.push_back(0x81); // literal
 				push_back_32(omf, -8);
 				omf.push_back(0x07);
+				if (size > 1) omf_mask(omf, 0xff);
 				break;
 
 
 			case EXPR_BYTE2:
-				// (x >> 16) & 0xff
+				// (e >> 16) & 0xff
 				omf.push_back(0x81); // literal
 				push_back_32(omf, -16);
 				omf.push_back(0x07);
+				if (size > 1) omf_mask(omf, 0xff);
 				break;
 
 			case EXPR_BYTE3:
-				// (x >> 24) & 0xff
+				// (e >> 24) & 0xff
+				omf.push_back(0x81); // literal
+				push_back_32(omf, -24);
+				omf.push_back(0x07);
+				if (size > 1) omf_mask(omf, 0xff);
+				break;
+
+
+
+			// TODO -- WORD needs to check the size
+			// and & 0xff (or append 1-byte const 0)
+			// if not 1-byte.
+			// eg, .word ^$12345667 -> .word $0034
+
+			case EXPR_WORD0:
+				// e & 0xffff
+				if (size > 2) omf_mask(omf, 0xffff);
+				break;
+
+			case EXPR_WORD1:
+				// (e >> 16) & 0xffff
+				omf.push_back(0x81); // literal
+				push_back_32(omf, -16);
+				omf.push_back(0x07);
+				if (size > 2) omf_mask(omf, 0xffff);
+				break;
+
+
+			case EXPR_BANK:
+				// (e >> 24)
 				omf.push_back(0x81); // literal
 				push_back_32(omf, -24);
 				omf.push_back(0x07);
 				break;
 
-
-			case EXPR_BANK:
-			case EXPR_SWAP:
-
-			case EXPR_WORD0:
-			case EXPR_WORD1:
-			case EXPR_FARADDR:
 			case EXPR_DWORD:
+				break;
+
+			case EXPR_SWAP:
+			case EXPR_FARADDR:
 			case EXPR_NEARADDR:
 			default:
 				errx(1,"Bad/unsupported unary node: $%02x", op);
@@ -134,11 +168,10 @@ static void convert_expression_helper(FILE *f, std::vector<uint8_t> &omf, unsign
 				return;
 			}
 			fseek(f, pos, SEEK_SET);
-		} 
+		}
 
-
-		convert_expression_helper(f, omf, segno); // left
-		convert_expression_helper(f, omf, segno); // right
+		convert_expression_helper(f, omf, size, segno); // left
+		convert_expression_helper(f, omf, size, segno); // right
 
 		switch(op) {
 			case EXPR_PLUS:
@@ -202,24 +235,58 @@ static void convert_expression_helper(FILE *f, std::vector<uint8_t> &omf, unsign
 				omf.push_back(0x0a);
 				break;
 
+
 			case EXPR_MAX:
 			case EXPR_MIN:
 			default:
-				errx(1,"Bad binary node: $%02x", op);
+				errx(1,"Bad/unsupported binary node: $%02x", op);
 		}
 		return;
 	}
 	return;
 }
 
+static int expr_size(unsigned op) {
+	switch(op) {
+		case EXPR_BYTE0:
+		case EXPR_BYTE1:
+		case EXPR_BYTE2:
+		case EXPR_BYTE3:
+			return 1;
+		case EXPR_WORD0:
+		case EXPR_WORD1:
+		case EXPR_NEARADDR:
+			return 2;
+		case EXPR_DWORD:
+			return 4;
+		case EXPR_FARADDR:
+			return 3;
+		default: return 4;
+	}
+}
 void convert_expression(FILE *f, unsigned size, std::vector<uint8_t> &omf, unsigned segno) {
 
+	// OMF relocations only support +/- and shift
+	// so special handling to zero-pad 1-byte (^<>) ops
+	unsigned zpad = 0;
+	int op = Peek8(f);
+	int es = expr_size(op);
+	if (es < size) {
+		zpad = size - es;
+		size = es;
+	}
 	omf.push_back(0xeb);
 	omf.push_back(size);
 
-	convert_expression_helper(f, omf, segno);
+	convert_expression_helper(f, omf, size, segno);
 
 	omf.push_back(0x00); // end of expr
+
+	if (zpad) {
+		omf.push_back(zpad);
+		for (unsigned i = 0; i < zpad; ++i)
+			omf.push_back(0x00);
+	}
 }
 
 

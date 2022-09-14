@@ -59,6 +59,13 @@ unsigned Read8 (FILE* F)
     return C;
 }
 
+int Peek8 (FILE *F)
+{
+    int C = getc(F);
+    if (C != EOF) ungetc(C, F);
+    return C;
+}
+
 
 
 unsigned Read16 (FILE* F)
