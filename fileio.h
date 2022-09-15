@@ -75,6 +75,18 @@ void* ReadData (FILE* F, void* Data, unsigned Size);
 /* Read data from the file */
 
 
+void Write8 (FILE* F, unsigned char Val);
+/* Write an 8 bit value to the file */
+
+void Write16 (FILE* F, unsigned Val);
+/* Write a 16 bit value to the file */
+
+void Write32 (FILE* F, unsigned long Val);
+/* Write a 32 bit value to the file */
+
+void WriteData (FILE* F, const void* Data, unsigned Size);
+/* Write data to the file */
+
 /* End of fileio.h */
 
 #endif

@@ -39,6 +39,7 @@ struct export_sym {
 struct segment {
 	std::string name;
 	long size = 0;
+	long address = 0;
 	unsigned omf_kind = 0;
 	std::vector<uint8_t> omf;
 	std::vector<export_sym> exports;

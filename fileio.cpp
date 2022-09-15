@@ -162,3 +162,41 @@ void* ReadData (FILE* F, void* Data, unsigned Size)
     }
     return Data;
 }
+
+
+void Write8 (FILE* F, unsigned char Val)
+/* Write an 8 bit value to the file */
+{
+    if (putc (Val, F) == EOF) {
+        errx(1, "Write error (disk full?)");
+    }
+}
+
+
+
+void Write16 (FILE* F, unsigned Val)
+/* Write a 16 bit value to the file */
+{
+    Write8 (F, (unsigned char) Val);
+    Write8 (F, (unsigned char) (Val >> 8));
+}
+
+
+
+void Write32 (FILE* F, unsigned long Val)
+/* Write a 32 bit value to the file */
+{
+    Write8 (F, (unsigned char) Val);
+    Write8 (F, (unsigned char) (Val >> 8));
+    Write8 (F, (unsigned char) (Val >> 16));
+    Write8 (F, (unsigned char) (Val >> 24));
+}
+
+
+void WriteData (FILE* F, const void* Data, unsigned Size)
+/* Write data to the file */
+{
+    if (fwrite (Data, 1, Size, F) != Size) {
+        errx (1, "Write error (disk full?)");
+    }
+}

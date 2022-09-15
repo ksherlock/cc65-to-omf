@@ -1,6 +1,7 @@
 
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 #include <stdio.h>
 #include <unistd.h>
@@ -54,19 +55,25 @@ void push_back_gequ(std::vector<uint8_t> &data, const std::string &name, uint16_
 }
 
 
+struct file {
+	unsigned number = 0;
+	std::string name;
+	std::vector<segment> segments;
+};
 
 std::vector<std::string> StringPool;
 std::vector<std::string> Imports;
 std::vector<segment> Segments;
+std::vector<file> Files;
 
-void init() {
+void reset() {
 	StringPool.clear();
 	Imports.clear();
 	Segments.clear();
 }
 
 
-void save_omf_segment(FILE *f, const segment &seg) {
+long save_omf_segment(FILE *f, const segment &seg, int segno) {
 
 	uint8_t header[48 + 10 + 1];
 
@@ -107,8 +114,8 @@ void save_omf_segment(FILE *f, const segment &seg) {
 	header[31] = 0;
 	header[32] = 0; // little endian
 	header[33] = 0; // unused;
-	header[34] = 0; // segnum -- Apple's linker warns if 0.
-	header[35] = 0;
+	header[34] = segno >> 0; // segnum -- Apple's linker warns if 0.
+	header[35] = segno >> 8;
 	header[36] = 0; // entry 
 	header[37] = 0;
 	header[38] = 0;
@@ -127,9 +134,89 @@ void save_omf_segment(FILE *f, const segment &seg) {
 	for (int i = 0; i < 10; ++i) header[48 + i] = ' ';
 	// seg name
 	header[58] = seg.name.size();
-	fwrite(header, sizeof(header), 1, f);
-	fwrite(seg.name.data(), 1, seg.name.size(), f);
-	fwrite(seg.omf.data(), 1, seg.omf.size(), f);
+
+	WriteData(f, header, sizeof(header));
+	WriteData(f, seg.name.data(), seg.name.size());
+	WriteData(f, seg.omf.data(), seg.omf.size());
+
+	return seg.omf.size() + sizeof(header) + seg.name.size();
+}
+
+
+long save_omf_lib_header(FILE *f, const std::vector<uint8_t> &a, const std::vector<uint8_t> &b, const std::vector<uint8_t> &c) {
+
+	// sizeof("") includes trailing 0 byte.
+	uint8_t header[44 + 10 + sizeof("LIBRARY")];
+
+	uint16_t kind = 0x08; // library
+
+	long n = sizeof(header) + a.size() + b.size() + c.size() + 3 * 5 + 1; 
+	header[0] = n >> 0; // byte count (4)
+	header[1] = n >> 8;
+	header[2] = n >> 16;
+	header[3] = n >> 24;
+	header[4] = 0; // reserved (4)
+	header[5] = 0;
+	header[6] = 0;
+	header[7] = 0;
+	header[8] = 0; // length
+	header[9] = 0;
+	header[10] = 0;
+	header[11] = 0;
+	header[12] = 0; // unused
+	header[13] = 0; // label length - variable
+	header[14] = 4; // numlen
+	header[15] = 2; // version
+	header[16] = static_cast<uint8_t>(0x010000 >> 0); // bank size
+	header[17] = static_cast<uint8_t>(0x010000 >> 8);
+	header[18] = static_cast<uint8_t>(0x010000 >> 16);
+	header[19] = static_cast<uint8_t>(0x010000 >> 24);
+	header[20] = kind >> 0; // kind
+	header[21] = kind >> 8;
+	header[22] = 0; // unused
+	header[23] = 0;
+	header[24] = 0; // org
+	header[25] = 0;
+	header[26] = 0;
+	header[27] = 0;
+	header[28] = 0; // alignment
+	header[29] = 0;
+	header[30] = 0;
+	header[31] = 0;
+	header[32] = 0; // little endian
+	header[33] = 0; // unused;
+	header[34] = 0; // segnum -- Apple's linker warns if 0.
+	header[35] = 0;
+	header[36] = 0; // entry 
+	header[37] = 0;
+	header[38] = 0;
+	header[39] = 0;
+	header[40] = 44 >> 0; // name displacement
+	header[41] = 44 >> 8;
+	n = sizeof(header);
+	header[42] = n >> 0; // data displacement
+	header[43] = n >> 8;
+
+	// load name
+	for (int i = 0; i < 18; ++i) header[48 + i] = "          \x07LIBRARY"[i];
+
+	WriteData(f, header, sizeof(header));
+
+	Write8(f, 0xf2); // lconst
+	Write32(f,a.size());
+	WriteData(f, a.data(), a.size());
+
+	Write8(f, 0xf2); // lconst
+	Write32(f,b.size());
+	WriteData(f, b.data(), b.size());
+
+	Write8(f, 0xf2); // lconst
+	Write32(f,c.size());
+	WriteData(f, c.data(), c.size());
+
+	Write8(f, 0x00); // end
+
+	return sizeof(header) + a.size() + b.size() + c.size() + 3 * 5 + 1;
 }
 
 int file_type(FILE *f) {
@@ -410,7 +497,7 @@ void read_segments(FILE *f, long size) {
 
 }
 
-void process_obj(FILE *f) {
+void process_obj(FILE *f, bool save) {
 
 
 	ObjHeader h;
@@ -473,12 +560,15 @@ void process_obj(FILE *f) {
 	process_segments(f, h.SegSize);
 
 
-	FILE *out = fopen("out.omf", "wb");
-	for (auto &seg : Segments) {
-		if (!seg.omf.empty())
-			save_omf_segment(out, seg);
+	if (save) {
+		FILE *out = fopen("out.omf", "wb");
+		int segno = 0;
+		for (auto &seg : Segments) {
+			if (!seg.omf.empty())
+				save_omf_segment(out, seg, ++segno);
+		}
+		fclose(out);
 	}
-	fclose(out);
 }
 
 void process_lib(FILE *f) {
@@ -508,10 +598,106 @@ void process_lib(FILE *f) {
 
 		unsigned long pos = ftell(f);
 		fseek(f, offset, SEEK_SET);
-		process_obj(f);
+		process_obj(f, false);
 		fseek(f, pos, SEEK_SET);
+
+		file f;
+		f.name = std::move(name);
+		f.number = i + 1;
+		f.segments = std::move(Segments);
+
+		Files.emplace_back(std::move(f));
+
+		reset();
 	}
 
+	// library segment consists of 3 lcsont records:
+	// 1. filenames
+	// - { uint16_t fileno, pstring name}*
+	// 2. symbol table
+	// - { uint32_t name_displ, uint16_t fileno, uint16_t private, uint32_t segment_displ }*
+	// 3. symbol names
+	// - pstring*
+
+
+
+	// now we can build everything...
+
+	std::vector<uint8_t> file_recs;
+	std::vector<uint8_t> symbol_recs;
+	std::vector<uint8_t> name_recs;
+	std::unordered_map<std::string, uint32_t> symbol_map;
+
+
+	// file names
+	for (const auto &f : Files) {
+		push_back_16(file_recs, f.number);
+		push_back_string(file_recs, f.name);
+	}
+
+	unsigned symbol_count = 0;
+	// symbol names
+	for (const auto &f : Files) {
+		for (const auto &seg : f.segments) {
+			if (seg.omf.empty()) continue;
+
+			symbol_count++;
+			auto &name = seg.name;
+			if (symbol_map.find(name) == symbol_map.end()) {
+				uint32_t offset = symbol_recs.size();
+				symbol_map.emplace(name, offset);
+				push_back_string(symbol_recs, name);
+			}
+			for(const auto &e : seg.exports) {
+				symbol_count++;
+				auto &name = e.name;
+				if (symbol_map.find(name) == symbol_map.end()) {
+					uint32_t offset = symbol_recs.size();
+					symbol_map.emplace(name, offset);
+					push_back_string(symbol_recs, name);
+				}
+			}
+		}
+	}
+
+	// symbols deferred until segment offset is known.
+	symbol_recs.reserve(symbol_count * 12);
+
+	// lconst + end + segment header overhead.
+	long address = 5 * 3 + 1 + 62 + file_recs.size() + name_recs.size() + symbol_count * 12;
+
+	FILE *out = fopen("out.lib", "wb");
+	fseek(out, address, SEEK_SET);
+
+	for (const auto &f : Files) {
+		unsigned segno = 0;
+		for (const auto &seg : f.segments) {
+			if (seg.omf.empty()) continue;
+			// seg.address = address;
+
+			auto &name = seg.name;
+
+			push_back_32(symbol_recs, symbol_map.at(name));
+			push_back_16(symbol_recs, f.number);
+			push_back_16(symbol_recs, 1); // private
+			push_back_32(symbol_recs, address);
+
+
+			for (const auto &e : seg.exports) {
+				auto &name = e.name;
+
+				push_back_32(symbol_recs, symbol_map.at(name));
+				push_back_16(symbol_recs, f.number);
+				push_back_16(symbol_recs, 0); // public
+				push_back_32(symbol_recs, address);
+
+			}
+			address += save_omf_segment(out, seg, ++segno);
+		}
+	}
+	fseek(out, 0, SEEK_SET);
+	save_omf_lib_header(out, file_recs, symbol_recs, name_recs);
+	fclose(out);
 }
 
 
@@ -549,7 +735,7 @@ int main(int argc, char **argv) {
 	if (!f) err(1, "Unable to open file %s", argv[0]);
 
 	switch(file_type(f)) {
-		case 0: process_obj(f); break;
+		case 0: process_obj(f, true); break;
 		case 1: process_lib(f); break;
 	}
 
