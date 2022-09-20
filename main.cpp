@@ -291,7 +291,7 @@ void read_exports(FILE *f, long size) {
 			}
 		} else {
 			uint32_t value = Read32(f);
-			ex.expr.emplace_back(expr_node{ value, EXPR_LITERAL });
+			ex.expr.emplace_back(EXPR_LITERAL, value);
 		}
 
 		unsigned size = 0;

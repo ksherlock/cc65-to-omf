@@ -29,8 +29,18 @@ inline void push_back_32(std::vector<uint8_t> &data, uint32_t x) {
 }
 
 struct expr_node {
-	uint32_t value;
-	uint16_t op;
+	uint16_t op = 0;
+	uint16_t section = 0;
+	uint32_t value = 0;
+
+	expr_node(uint16_t a, uint32_t b) : 
+		op(a), value(b)
+	{}
+	expr_node(uint16_t a, uint16_t b, uint32_t c) : 
+		op(a), section(b), value(c)
+	{}
+
+
 };
 
 typedef std::vector<expr_node> expr_vector;
@@ -71,5 +81,5 @@ void convert_gequ(const std::string &name, const expr_vector &ev, std::vector<ui
 expr_vector read_expr(FILE *f);
 
 
-#define EXPR_SECTION_REL 0x87
+// #define EXPR_SECTION_REL 0x87
 #endif

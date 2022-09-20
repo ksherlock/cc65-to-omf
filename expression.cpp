@@ -46,20 +46,93 @@
 #define OMF_REL 0x87
 
 
+static bool simplify_expression_helper(expr_vector &ev, int ix) {
+
+	auto &e = ev[ix];
+
+	if (e.op == EXPR_PLUS) {
+		auto &l = ev[e.value >> 16];
+		auto &r = ev[e.value & 0xffff];
+
+		if (l.op == EXPR_SECTION && r.op == EXPR_LITERAL) {
+			e.op = EXPR_SECTION;
+			e.section = l.section;
+			e.value = l.value + r.value;
+			l.op = EXPR_NULL;
+			r.op = EXPR_NULL;
+			return true;
+		}
+	}
+
+	if ((e.op & EXPR_TYPEMASK) == EXPR_UNARYNODE) {
+		return simplify_expression_helper(ev, e.value);
+	}
+
+	if ((e.op & EXPR_TYPEMASK) == EXPR_BINARYNODE) {
+
+		int l = e.value >> 16;
+		int r = e.value & 0xffff;
+
+		bool delta = false;
+		delta |= simplify_expression_helper(ev, l);
+		delta |= simplify_expression_helper(ev, r);
+
+		if (e.op == EXPR_PLUS) {
+
+			auto &ll = ev[l];
+			auto &rr = ev[r];
+
+			if (ll.op == EXPR_SECTION && rr.op == EXPR_LITERAL) {
+				e = ll;
+				e.value += rr.value;
+
+				ll.op = EXPR_NULL;
+				rr.op = EXPR_NULL;
+				delta = true;
+			}
+		}
+
+		if (e.op == EXPR_MINUS) {
+
+			auto &ll = ev[l];
+			auto &rr = ev[r];
+
+			if (ll.op == EXPR_SECTION && rr.op == EXPR_LITERAL) {
+				e = ll;
+				e.value -= rr.value;
+				ll.op = EXPR_NULL;
+				rr.op = EXPR_NULL;
+				delta = true;
+			}
+		}
+
+
+		return delta;
+	}
+
+
+	return false;
+}
+
+void simplify_expression(expr_vector &ev) {
+
+	bool delta = simplify_expression_helper(ev, 0);
+
+	if (delta) {
+		while (!ev.empty() && ev.back().op == EXPR_NULL)
+			ev.pop_back();
+	}
+
+}
+
 // check if this is a section / section + offset.
 bool section_expr(const expr_vector &ev, int &seg, uint32_t &offset) {
 
-	if (ev.size() != 1) return false;
+	if (ev.empty()) return false;
 
 	auto e = ev.front();
-	int op = e.op & 0xff;
-	if (op == EXPR_SECTION) {
-		seg = e.value;
-		offset = 0;
-		return true;
-	}
-	if (op == EXPR_SECTION_REL) {
-		seg = e.op >> 8;
+	if (e.op == EXPR_SECTION) {
+		seg = e.section;
 		offset = e.value;
 		return true;
 	}
@@ -76,11 +149,13 @@ void read_expr_helper(FILE *f, expr_vector &rv) {
 	if ((op & EXPR_TYPEMASK) == EXPR_LEAFNODE) {
 		switch(op) {
 			case EXPR_LITERAL:
-				rv.push_back( { Read32(f), op });
+				rv.emplace_back( op, Read32(f));
 				break;
 			case EXPR_SYMBOL:
+				rv.emplace_back( op, ReadVar(f));
+				break;
 			case EXPR_SECTION:
-				rv.push_back( { ReadVar(f), op });
+				rv.emplace_back( op, ReadVar(f), 0);
 				break;
 			default:
 				errx(1,"Bad leaf node: $%02x", op);
@@ -91,7 +166,7 @@ void read_expr_helper(FILE *f, expr_vector &rv) {
 	if ((op & EXPR_TYPEMASK) == EXPR_UNARYNODE) {
 		// unary
 		auto ix = rv.size();
-		rv.emplace_back(expr_node{ 0, op });
+		rv.emplace_back(op, 0 );
 
 		int l = rv.size(); read_expr_helper(f, rv); // left
 		
@@ -106,23 +181,10 @@ void read_expr_helper(FILE *f, expr_vector &rv) {
 		// binary
 
 		auto ix = rv.size();
-		rv.emplace_back(expr_node{ 0, op });
+		rv.emplace_back(op, 0);
 		int l = rv.size(); read_expr_helper(f, rv); // left
 		int r = rv.size(); read_expr_helper(f, rv); // right
 		rv[ix].value = (l << 16) | r;
-
-		// special case for + section, literal
-		if (op == EXPR_PLUS) {
-			if (rv[l].op == EXPR_SECTION && rv[r].op == EXPR_LITERAL) {
-				int seg = rv[l].value;
-				int offset = rv[r].value;
-				rv.pop_back();
-				rv.pop_back();
-
-				rv[ix].op = EXPR_SECTION_REL | (seg << 8);
-				rv[ix].value = offset;
-			}
-		}
 
 		return;
 	}
@@ -132,6 +194,7 @@ expr_vector read_expr(FILE *f) {
 
 	expr_vector rv;
 	read_expr_helper(f, rv);
+	simplify_expression(rv);
 	return rv;
 }
 
@@ -155,7 +218,7 @@ static void convert_expression_helper(const expr_vector &ev, int ix, std::vector
 
 
 	const auto e = ev[ix];
-	auto op = e.op & 0xff;
+	auto op = e.op;
 
 
 	if ((op & EXPR_TYPEMASK) == EXPR_LEAFNODE) {
@@ -166,32 +229,30 @@ static void convert_expression_helper(const expr_vector &ev, int ix, std::vector
 				push_back_8(omf, OMF_ABS);
 				push_back_32(omf, e.value);
 				return;
+
 			case EXPR_SYMBOL:
 				push_back_8(omf, OMF_LAB);
 				push_back_string(omf, Imports[e.value]);
 				return;
-			case EXPR_SECTION_REL:
-				seg = e.op >> 8;
-				offset = e.value;
-				break;
+
 			case EXPR_SECTION:
-				seg = e.value;
+				if (e.section == segno) {
+					push_back_8(omf, OMF_REL);
+					push_back_32(omf, e.value);
+				} else {
+					push_back_8(omf, OMF_LAB);
+					push_back_string(omf, Segments[seg].name);
+					if (e.value) {
+						push_back_8(omf, OMF_ABS);
+						push_back_32(omf, e.value);
+						push_back_8(omf, OMF_ADD);
+					}		
+				}
 				break;
 			default:
 				errx(1,"Bad leaf node: $%02x", op);
 		}
-		if (seg == segno) {
-			push_back_8(omf, OMF_REL);
-			push_back_32(omf, offset);
-		} else {
-			push_back_8(omf, OMF_LAB);
-			push_back_string(omf, Segments[seg].name);
-			if (e.value) {
-				push_back_8(omf, OMF_ABS);
-				push_back_32(omf, e.value);
-				push_back_8(omf, OMF_ADD); // +
-			}
-		}
+
 		return;
 	}
 
