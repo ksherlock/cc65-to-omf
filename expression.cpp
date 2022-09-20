@@ -12,6 +12,131 @@
 #include "to_omf.h"
 
 
+// OMF expression operations
+#define OMF_END 0x00
+#define OMF_ADD 0x01
+#define OMF_SUB 0x02
+#define OMF_MUL 0x03
+#define OMF_DIV 0x04
+#define OMF_MOD 0x05
+#define OMF_NEG 0x06
+#define OMF_SHIFT 0x07
+#define OMF_AND 0x08
+#define OMF_OR 0x09
+#define OMF_EOR 0x0a
+#define OMF_NOT 0x0b
+#define OMF_LE 0x0c
+#define OMF_GE 0x0d
+#define OMF_NE 0x0e
+#define OMF_LT 0x0f
+#define OMF_GT 0x10
+#define OMF_EQ 0x11
+#define OMF_BAND 0x12
+#define OMF_BOR 0x13
+#define OMF_BEOR 0x14
+#define OMF_BNOT 0x15
+
+#define OMF_PC 0x80
+#define OMF_ABS 0x81
+#define OMF_WEAK 0x82
+#define OMF_LAB 0x83
+#define OMF_LAB_LENGTH 0x84
+#define OMF_LAB_TYPE 0x85
+#define OMF_LAB_COUNT 0x86
+#define OMF_REL 0x87
+
+
+// check if this is a section / section + offset.
+bool section_expr(const expr_vector &ev, int &seg, uint32_t &offset) {
+
+	if (ev.size() != 1) return false;
+
+	auto e = ev.front();
+	int op = e.op & 0xff;
+	if (op == EXPR_SECTION) {
+		seg = e.value;
+		offset = 0;
+		return true;
+	}
+	if (op == EXPR_SECTION_REL) {
+		seg = e.op >> 8;
+		offset = e.value;
+		return true;
+	}
+
+	return false;
+	// TODO - any other section references aren't supported....
+}
+
+void read_expr_helper(FILE *f, expr_vector &rv) {
+
+	uint16_t op = Read8(f);
+	if (op == EXPR_NULL) errx(1, "Unexpected NULL expression");
+
+	if ((op & EXPR_TYPEMASK) == EXPR_LEAFNODE) {
+		switch(op) {
+			case EXPR_LITERAL:
+				rv.push_back( { Read32(f), op });
+				break;
+			case EXPR_SYMBOL:
+			case EXPR_SECTION:
+				rv.push_back( { ReadVar(f), op });
+				break;
+			default:
+				errx(1,"Bad leaf node: $%02x", op);
+		}
+		return;
+	}
+
+	if ((op & EXPR_TYPEMASK) == EXPR_UNARYNODE) {
+		// unary
+		auto ix = rv.size();
+		rv.emplace_back(expr_node{ 0, op });
+
+		int l = rv.size(); read_expr_helper(f, rv); // left
+		
+		// right side.  should be null...
+		op = Read8(f);
+		if (op) errx(1, "Expected NULL for unary operation.");
+		rv[ix].value = l;
+		return;
+	}
+
+	if ((op & EXPR_TYPEMASK) == EXPR_BINARYNODE) {
+		// binary
+
+		auto ix = rv.size();
+		rv.emplace_back(expr_node{ 0, op });
+		int l = rv.size(); read_expr_helper(f, rv); // left
+		int r = rv.size(); read_expr_helper(f, rv); // right
+		rv[ix].value = (l << 16) | r;
+
+		// special case for + section, literal
+		if (op == EXPR_PLUS) {
+			if (rv[l].op == EXPR_SECTION && rv[r].op == EXPR_LITERAL) {
+				int seg = rv[l].value;
+				int offset = rv[r].value;
+				rv.pop_back();
+				rv.pop_back();
+
+				rv[ix].op = EXPR_SECTION_REL | (seg << 8);
+				rv[ix].value = offset;
+			}
+		}
+
+		return;
+	}
+}
+
+expr_vector read_expr(FILE *f) {
+
+	expr_vector rv;
+	read_expr_helper(f, rv);
+	return rv;
+}
+
+
+
 // export segments need to be converted to globals.
 // globals are inline at the specified location.
 
@@ -20,56 +145,60 @@
 
 
 static void omf_mask(std::vector<uint8_t> &omf, uint32_t mask) {
-	omf.push_back(0x81); // Literal
+	omf.push_back(OMF_ABS);
 	push_back_32(omf, mask);
-	omf.push_back(0x12); // AND
+	omf.push_back(OMF_BAND);
 }
 
 
-static void convert_expression_helper(FILE *f, std::vector<uint8_t> &omf, unsigned size, unsigned segno) {
+static void convert_expression_helper(const expr_vector &ev, int ix, std::vector<uint8_t> &omf, unsigned size, unsigned segno) {
 
-	unsigned n;
-	unsigned op = Read8(f);
 
-	if (op == EXPR_NULL) return;
+	const auto e = ev[ix];
+	auto op = e.op & 0xff;
 
-	if ((op & 0xc0) == 0x80) {
-		switch(op) {
-			case EXPR_NULL:
-				break;
+
+	if ((op & EXPR_TYPEMASK) == EXPR_LEAFNODE) {
+		unsigned seg = 0;
+		long offset = 0;
+		switch (op) {
 			case EXPR_LITERAL:
-				omf.push_back(0x81);
-				omf.push_back(Read8(f));
-				omf.push_back(Read8(f));
-				omf.push_back(Read8(f));
-				omf.push_back(Read8(f));
-				break;
+				push_back_8(omf, OMF_ABS);
+				push_back_32(omf, e.value);
+				return;
 			case EXPR_SYMBOL:
-				n = ReadVar(f);
-				omf.push_back(0x83);
-				push_back_string(omf, Imports[n]);
+				push_back_8(omf, OMF_LAB);
+				push_back_string(omf, Imports[e.value]);
+				return;
+			case EXPR_SECTION_REL:
+				seg = e.op >> 8;
+				offset = e.value;
 				break;
 			case EXPR_SECTION:
-				n = Read8(f);
-				if (n == segno) {
-					omf.push_back(0x87); // rel
-					push_back_32(omf, 0);
-				} else {
-					omf.push_back(0x83);
-					push_back_string(omf, Segments[n].name);
-				}
+				seg = e.value;
 				break;
 			default:
 				errx(1,"Bad leaf node: $%02x", op);
 		}
+		if (seg == segno) {
+			push_back_8(omf, OMF_REL);
+			push_back_32(omf, offset);
+		} else {
+			push_back_8(omf, OMF_LAB);
+			push_back_string(omf, Segments[seg].name);
+			if (e.value) {
+				push_back_8(omf, OMF_ABS);
+				push_back_32(omf, e.value);
+				push_back_8(omf, OMF_ADD); // +
+			}
+		}
 		return;
 	}
 
-	if ((op & 0xc0) == 0x40) {
+	if ((op & EXPR_TYPEMASK) == EXPR_UNARYNODE) {
 		// unary
-		std::vector<uint8_t> scratch;
-		convert_expression_helper(f, omf, size, segno); // left
-		convert_expression_helper(f, scratch, size, segno); // right - ignored.
+
+		convert_expression_helper(ev, e.value, omf, size, segno);
 
 		switch(op) {
 			case EXPR_UNARY_MINUS:
@@ -91,7 +220,7 @@ static void convert_expression_helper(FILE *f, std::vector<uint8_t> &omf, unsign
 
 			case EXPR_BYTE1:
 				// (e >> 8) & 0xff
-				omf.push_back(0x81); // literal
+				omf.push_back(OMF_ABS); // literal
 				push_back_32(omf, -8);
 				omf.push_back(0x07);
 				if (size > 1) omf_mask(omf, 0xff);
@@ -100,7 +229,7 @@ static void convert_expression_helper(FILE *f, std::vector<uint8_t> &omf, unsign
 
 			case EXPR_BYTE2:
 				// (e >> 16) & 0xff
-				omf.push_back(0x81); // literal
+				omf.push_back(OMF_ABS); // literal
 				push_back_32(omf, -16);
 				omf.push_back(0x07);
 				if (size > 1) omf_mask(omf, 0xff);
@@ -108,9 +237,13 @@ static void convert_expression_helper(FILE *f, std::vector<uint8_t> &omf, unsign
 
 			case EXPR_BYTE3:
 				// (e >> 24) & 0xff
-				omf.push_back(0x81); // literal
+				omf.push_back(OMF_ABS); // literal
 				push_back_32(omf, -24);
 				omf.push_back(0x07);
+
+				// if this is a segment,
+				// masking not necessary (24-bit addressing)
+
 				if (size > 1) omf_mask(omf, 0xff);
 				break;
 
@@ -128,7 +261,7 @@ static void convert_expression_helper(FILE *f, std::vector<uint8_t> &omf, unsign
 
 			case EXPR_WORD1:
 				// (e >> 16) & 0xffff
-				omf.push_back(0x81); // literal
+				omf.push_back(OMF_ABS); // literal
 				push_back_32(omf, -16);
 				omf.push_back(0x07);
 				if (size > 2) omf_mask(omf, 0xffff);
@@ -137,7 +270,7 @@ static void convert_expression_helper(FILE *f, std::vector<uint8_t> &omf, unsign
 
 			case EXPR_BANK:
 				// (e >> 24)
-				omf.push_back(0x81); // literal
+				omf.push_back(OMF_ABS); // literal
 				push_back_32(omf, -24);
 				omf.push_back(0x07);
 				break;
@@ -154,24 +287,13 @@ static void convert_expression_helper(FILE *f, std::vector<uint8_t> &omf, unsign
 		return;
 	}
 
-	if ((op & 0xc0) == 0) {
-		// binary ops
+	if ((op & EXPR_TYPEMASK) == EXPR_BINARYNODE) {
 
-		// special case -- if this is a my_segment + literal
-		// it can be converted to an OMF REL.
-		if (op == EXPR_PLUS) {
-			long pos = ftell(f);
-			if (Read8(f) == EXPR_SECTION && Read8(f) == segno && Read8(f) == EXPR_LITERAL) {
-				uint32_t offset = Read32(f);
-				omf.push_back(0x87);
-				push_back_32(omf, offset);
-				return;
-			}
-			fseek(f, pos, SEEK_SET);
-		}
+		int l = e.value >> 16;
+		int r = e.value & 0xffff;
 
-		convert_expression_helper(f, omf, size, segno); // left
-		convert_expression_helper(f, omf, size, segno); // right
+		convert_expression_helper(ev, l, omf, size, segno);
+		convert_expression_helper(ev, r, omf, size, segno);
 
 		switch(op) {
 			case EXPR_PLUS:
@@ -243,7 +365,6 @@ static void convert_expression_helper(FILE *f, std::vector<uint8_t> &omf, unsign
 		}
 		return;
 	}
-	return;
 }
 
 static int expr_size(unsigned op) {
@@ -264,12 +385,13 @@ static int expr_size(unsigned op) {
 		default: return 4;
 	}
 }
-void convert_expression(FILE *f, unsigned size, std::vector<uint8_t> &omf, unsigned segno) {
+
+void convert_expression(const expr_vector &ev, unsigned size, std::vector<uint8_t> &omf, unsigned segno) {
 
 	// OMF relocations only support +/- and shift
 	// so special handling to zero-pad 1-byte (^<>) ops
 	unsigned zpad = 0;
-	int op = Peek8(f);
+	int op = ev.front().op;
 	int es = expr_size(op);
 	if (es < size) {
 		zpad = size - es;
@@ -278,7 +400,7 @@ void convert_expression(FILE *f, unsigned size, std::vector<uint8_t> &omf, unsig
 	omf.push_back(0xeb);
 	omf.push_back(size);
 
-	convert_expression_helper(f, omf, size, segno);
+	convert_expression_helper(ev, 0, omf, size, segno);
 
 	omf.push_back(0x00); // end of expr
 
@@ -291,41 +413,14 @@ void convert_expression(FILE *f, unsigned size, std::vector<uint8_t> &omf, unsig
 
 
 
-static unsigned export_expr_helper(FILE *f, unsigned &section, long &offset) {
+void convert_gequ(const std::string &name, const expr_vector &ev, std::vector<uint8_t> &omf) {
 
+	push_back_8(omf, 0xe7); // gequ
+	push_back_string(omf, name);
+	push_back_16(omf, 0); // length
+	push_back_8(omf, 'N'); // type
+	push_back_8(omf, 0); // public
 
-	// parse an export segment expression.
-	// supported types are Expression(section)
-	// or Expression(+, Expression(section), Expression(literal))
-
-	unsigned op;
-
-	op = Read8(f);
-	if (op == EXPR_SECTION) {
-		section = Read8(f);
-		return 1;
-	}
-
-	if (op == EXPR_LITERAL) {
-		offset = Read32(f);
-		return 2;
-	}
-
-
-	if (op == EXPR_PLUS) {
-		unsigned n = 0;
-		n |= export_expr_helper(f, section, offset);
-		n |= export_expr_helper(f, section, offset);
-
-		return n|4;
-	}
-
-	errx(1, "Unsupported export expression: $%02x", op);
-}
-
-void export_expr(FILE *f, unsigned &section, long &offset) {
-
-	unsigned n = export_expr_helper(f, section, offset);
-	if (n != 1 && n != 7)
-		errx(1, "Unsupported export expression");
+	convert_expression_helper(ev, 0, omf, 4, -1);
+	omf.push_back(0x00); // end of expr
 }

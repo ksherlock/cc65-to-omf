@@ -28,12 +28,22 @@ inline void push_back_32(std::vector<uint8_t> &data, uint32_t x) {
 	data.push_back(x >> 24);
 }
 
+struct expr_node {
+	uint32_t value;
+	uint16_t op;
+};
+
+typedef std::vector<expr_node> expr_vector;
+
 
 // "export" is reserved word in C++....
 struct export_sym {
 	std::string name;
-	unsigned long address = 0;
-	bool equ = false;
+
+	expr_vector expr;
+	bool sectional = false;
+	int section = 0;
+	uint32_t offset = 0;
 };
 
 struct segment {
@@ -49,8 +59,17 @@ extern std::vector<std::string> StringPool;
 extern std::vector<std::string> Imports;
 extern std::vector<segment> Segments;
 
-void export_expr(FILE *f, unsigned &section, long &offset);
-void convert_expression(FILE *f, unsigned size, std::vector<uint8_t> &omf, unsigned segno);
 
 
+// void export_expr(FILE *f, unsigned &section, long &offset);
+void convert_expression(const expr_vector &, unsigned size, std::vector<uint8_t> &omf, unsigned section);
+bool section_expr(const expr_vector &ev, int &section, uint32_t &offset);
+
+void convert_gequ(const std::string &name, const expr_vector &ev, std::vector<uint8_t> &omf);
+
+
+expr_vector read_expr(FILE *f);
+
+
+#define EXPR_SECTION_REL 0x87
 #endif

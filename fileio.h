@@ -57,10 +57,10 @@ unsigned Read8 (FILE* F);
 unsigned Read16 (FILE* F);
 /* Read a 16 bit value from the file */
 
-unsigned long Read32 (FILE* F);
+uint32_t Read32 (FILE* F);
 /* Read a 32 bit value from the file */
 
-unsigned long ReadVar (FILE* F);
+uint32_t ReadVar (FILE* F);
 /* Read a variable size value from the file */
 
 
@@ -81,7 +81,7 @@ void Write8 (FILE* F, unsigned char Val);
 void Write16 (FILE* F, unsigned Val);
 /* Write a 16 bit value to the file */
 
-void Write32 (FILE* F, unsigned long Val);
+void Write32 (FILE* F, uint32_t Val);
 /* Write a 32 bit value to the file */
 
 void WriteData (FILE* F, const void* Data, unsigned Size);

@@ -78,17 +78,17 @@ unsigned Read16 (FILE* F)
 
 
 
-unsigned long Read32 (FILE* F)
+uint32_t Read32 (FILE* F)
 /* Read a 32 bit value from the file */
 {
-    unsigned long Lo = Read16 (F);
-    unsigned long Hi = Read16 (F);
+    uint32_t Lo = Read16 (F);
+    uint32_t Hi = Read16 (F);
     return (Hi << 16) | Lo;
 }
 
 
 
-unsigned long ReadVar (FILE* F)
+uint32_t ReadVar (FILE* F)
 /* Read a variable size value from the file */
 {
     /* The value was written to the file in 7 bit chunks LSB first. If there
@@ -183,7 +183,7 @@ void Write16 (FILE* F, unsigned Val)
 
 
 
-void Write32 (FILE* F, unsigned long Val)
+void Write32 (FILE* F, uint32_t Val)
 /* Write a 32 bit value to the file */
 {
     Write8 (F, (unsigned char) Val);

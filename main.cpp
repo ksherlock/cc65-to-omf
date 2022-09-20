@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <err.h>
 
+#include "exprdefs.h"
 #include "fileio.h"
 #include "fragdefs.h"
 #include "libdefs.h"
@@ -148,7 +149,7 @@ long save_omf_lib_header(FILE *f, const std::vector<uint8_t> &a, const std::vect
 	// sizeof("") includes trailing 0 byte.
 	uint8_t header[44 + 10 + sizeof("LIBRARY")];
 
-	uint16_t kind = 0x08; // library
+	const uint16_t kind = 0x08; // library
 
 	long n = sizeof(header) + a.size() + b.size() + c.size() + 3 * 5 + 1; 
 	header[0] = n >> 0; // byte count (4)
@@ -167,10 +168,10 @@ long save_omf_lib_header(FILE *f, const std::vector<uint8_t> &a, const std::vect
 	header[13] = 0; // label length - variable
 	header[14] = 4; // numlen
 	header[15] = 2; // version
-	header[16] = static_cast<uint8_t>(0x010000 >> 0); // bank size
-	header[17] = static_cast<uint8_t>(0x010000 >> 8);
-	header[18] = static_cast<uint8_t>(0x010000 >> 16);
-	header[19] = static_cast<uint8_t>(0x010000 >> 24);
+	header[16] = 0; // bank size
+	header[17] = 0;
+	header[18] = 0;
+	header[19] = 0;
 	header[20] = kind >> 0; // kind
 	header[21] = kind >> 8;
 	header[22] = 0; // unused
@@ -198,7 +199,7 @@ long save_omf_lib_header(FILE *f, const std::vector<uint8_t> &a, const std::vect
 	header[43] = n >> 8;
 
 	// load name
-	for (int i = 0; i < 18; ++i) header[48 + i] = "          \x07LIBRARY"[i];
+	for (int i = 0; i < 18; ++i) header[44 + i] = "          \x07LIBRARY"[i];
 
 	WriteData(f, header, sizeof(header));
 
@@ -268,6 +269,8 @@ void read_exports(FILE *f, long size) {
 
 	unsigned count = ReadVar(f);
 
+	std::vector<export_sym> global_exports;;
+
 	for (unsigned i = 0; i < count; ++i) {
 
 		unsigned type = ReadVar(f);
@@ -280,15 +283,15 @@ void read_exports(FILE *f, long size) {
 		export_sym ex;
 		ex.name = StringPool[nm];
 
-		unsigned segno = 0;
 		if (type & SYM_EXPR) {
-			// segment or segment + offset.
-			long offset = 0;
-			export_expr(f, segno, offset);
-			ex.address = offset;
+			ex.expr = read_expr(f);
+			if (section_expr(ex.expr, ex.section, ex.offset)) {
+				ex.sectional = true;
+				ex.expr.clear();
+			}
 		} else {
-			ex.address = Read32(f);
-			ex.equ = true;
+			uint32_t value = Read32(f);
+			ex.expr.emplace_back(expr_node{ value, EXPR_LITERAL });
 		}
 
 		unsigned size = 0;
@@ -298,14 +301,31 @@ void read_exports(FILE *f, long size) {
 		skip_info_list(f);
 		skip_info_list(f);
 
-		Segments[segno].exports.emplace_back(std::move(ex));
+
+		if (ex.sectional) {
+			Segments[ex.section].exports.emplace_back(std::move(ex));
+		} else{
+			global_exports.emplace_back(std::move(ex));
+		}
 	}
 
-	// sort by address, reverse order.  segment 0 numeric equates go last.
+	// sort by address
 	for (auto &s : Segments) {
 		std::sort(s.exports.begin(), s.exports.end(), [](const export_sym &a, const export_sym &b){
-			return std::make_pair(!a.equ, a.address) > std::make_pair(!b.equ, b.address);
+			return a.offset < b.offset;
 		});
+	}
+
+	if (!global_exports.empty()) {
+		segment s;
+		s.name = "GLOBALS";
+
+		for (const auto &e : global_exports) {
+			convert_gequ(e.name, e.expr, s.omf);
+		}
+		s.omf.push_back(0x00); // end!
+		s.exports = std::move(global_exports);
+		Segments.emplace_back(std::move(s));
 	}
 }
 
@@ -342,18 +362,14 @@ void process_segment(FILE *f, int segno) {
 
 	std::vector<uint8_t> pending;
 
-	// literal value exports at the front.
-	while(!exports.empty()) {
-		auto &e = exports.back();
-		if (!e.equ) break;
-		push_back_gequ(omf, e.name, 0, 'G', false, e.address);
-		exports.pop_back();
-	}
+
+	auto iter = exports.begin();
+	auto end = exports.end();
 
 	unsigned long next_export = -1;
 	unsigned long pc = 0;
 
-	next_export = exports.empty() ? -1 : exports.back().address;
+	next_export = iter == end ? - 1 : iter->offset;
 
 
 	for (i = 0; i < count; ++i) {
@@ -361,20 +377,19 @@ void process_segment(FILE *f, int segno) {
 		unsigned n;
 
 		if (next_export < pc) {
-			auto &e = exports.back();
+			auto &e = *iter;
 			errx(1, "Unable to assign export %s: ($%04lx) pc=$%04lx",
-				e.name.c_str(), e.address, pc);
+				e.name.c_str(), (long)e.offset, pc);
 		}
 
 		while (next_export == pc) {
-			auto &e = exports.back();
+			auto &e = *iter;
 
 			flush_pending(omf, pending);
 
 			push_back_global(omf, e.name, 0, 'N', false);
-			exports.pop_back();
-
-			next_export = exports.empty() ? -1 : exports.back().address;
+			++iter;
+			next_export = iter == end ? - 1 : iter->offset;
 		}
 
 		size_t pos;
@@ -383,23 +398,11 @@ void process_segment(FILE *f, int segno) {
 				n = ReadVar(f);
 				// n bytes of data...
 				if (n == 0) break;
-				#if 0
-				if (n <= 0xdf) {
-					omf.push_back(n);
-				} else {
-					omf.push_back(0xf2); // LCONST
-					push_back_32(omf, n);
-				}
-				pos = omf.size();
-				for (unsigned i = 0; i < n; ++i)
-					omf.push_back(0x00); //
-				fread(omf.data() + pos, 1, n, f);
-				#else
 
 				pos = pending.size();
 				pending.resize(pos + n);
 				fread(pending.data() + pos, 1, n, f);
-				#endif
+
 				pc += n;
 				break;
 
@@ -416,7 +419,7 @@ void process_segment(FILE *f, int segno) {
 			case FRAG_SEXPR:
 				flush_pending(omf, pending);
 
-				convert_expression(f, type & FRAG_BYTEMASK, omf, segno);
+				convert_expression(read_expr(f), type & FRAG_BYTEMASK, omf, segno);
 				pc += type & FRAG_BYTEMASK;
 				break;
 		}
@@ -427,15 +430,19 @@ void process_segment(FILE *f, int segno) {
 
 	// trailing exports.
 	while (next_export == pc) {
-		auto &e = exports.back();
+		auto &e = *iter;
 
 		push_back_global(omf, e.name, 0, 'N', false);
-		exports.pop_back();
-
-		next_export = exports.empty() ? -1 : exports.back().address;
+		++iter;
+		next_export = iter == end ? - 1 : iter->offset;
 	}
-	if (!exports.empty()) {
-		errx(1, "Unable to assign exports\n");
+	if (iter != end) {
+		while (iter != end) {
+			const auto &e = *iter;
+			warnx("Unable to assign export %s: ($%04lx) pc=$%04lx",
+				e.name.c_str(), (long)e.offset, pc);
+		}
+		exit(1);
 	}
 
 	if (pc != expect_pc) errx(1, "PC Error");
@@ -589,7 +596,7 @@ void process_lib(FILE *f) {
 	fseek(f, h.IndexOffs, SEEK_SET);
 
 	unsigned count = ReadVar(f);
-	for (unsigned i = 0; i < count; ++ count) {
+	for (unsigned i = 0; i < count; ++i) {
 		std::string name = ReadString(f);
 		unsigned flags = Read16(f);
 		unsigned long mtime = Read32(f);
@@ -623,16 +630,16 @@ void process_lib(FILE *f) {
 
 	// now we can build everything...
 
-	std::vector<uint8_t> file_recs;
-	std::vector<uint8_t> symbol_recs;
-	std::vector<uint8_t> name_recs;
+	std::vector<uint8_t> file_names;
+	std::vector<uint8_t> symbol_table;
+	std::vector<uint8_t> symbol_names;
 	std::unordered_map<std::string, uint32_t> symbol_map;
 
 
 	// file names
 	for (const auto &f : Files) {
-		push_back_16(file_recs, f.number);
-		push_back_string(file_recs, f.name);
+		push_back_16(file_names, f.number);
+		push_back_string(file_names, f.name);
 	}
 
 	unsigned symbol_count = 0;
@@ -644,27 +651,27 @@ void process_lib(FILE *f) {
 			symbol_count++;
 			auto &name = seg.name;
 			if (symbol_map.find(name) == symbol_map.end()) {
-				uint32_t offset = symbol_recs.size();
+				uint32_t offset = symbol_names.size();
 				symbol_map.emplace(name, offset);
-				push_back_string(symbol_recs, name);
+				push_back_string(symbol_names, name);
 			}
 			for(const auto &e : seg.exports) {
 				symbol_count++;
 				auto &name = e.name;
 				if (symbol_map.find(name) == symbol_map.end()) {
-					uint32_t offset = symbol_recs.size();
+					uint32_t offset = symbol_names.size();
 					symbol_map.emplace(name, offset);
-					push_back_string(symbol_recs, name);
+					push_back_string(symbol_names, name);
 				}
 			}
 		}
 	}
 
 	// symbols deferred until segment offset is known.
-	symbol_recs.reserve(symbol_count * 12);
+	symbol_table.reserve(symbol_count * 12);
 
 	// lconst + end + segment header overhead.
-	long address = 5 * 3 + 1 + 62 + file_recs.size() + name_recs.size() + symbol_count * 12;
+	long address = 5 * 3 + 1 + 62 + file_names.size() + symbol_names.size() + symbol_count * 12;
 
 	FILE *out = fopen("out.lib", "wb");
 	fseek(out, address, SEEK_SET);
@@ -677,26 +684,26 @@ void process_lib(FILE *f) {
 
 			auto &name = seg.name;
 
-			push_back_32(symbol_recs, symbol_map.at(name));
-			push_back_16(symbol_recs, f.number);
-			push_back_16(symbol_recs, 1); // private
-			push_back_32(symbol_recs, address);
+			push_back_32(symbol_table, symbol_map.at(name));
+			push_back_16(symbol_table, f.number);
+			push_back_16(symbol_table, 1); // private
+			push_back_32(symbol_table, address);
 
 
 			for (const auto &e : seg.exports) {
 				auto &name = e.name;
 
-				push_back_32(symbol_recs, symbol_map.at(name));
-				push_back_16(symbol_recs, f.number);
-				push_back_16(symbol_recs, 0); // public
-				push_back_32(symbol_recs, address);
+				push_back_32(symbol_table, symbol_map.at(name));
+				push_back_16(symbol_table, f.number);
+				push_back_16(symbol_table, 0); // public
+				push_back_32(symbol_table, address);
 
 			}
 			address += save_omf_segment(out, seg, ++segno);
 		}
 	}
 	fseek(out, 0, SEEK_SET);
-	save_omf_lib_header(out, file_recs, symbol_recs, name_recs);
+	save_omf_lib_header(out, file_names, symbol_table, symbol_names);
 	fclose(out);
 }
 
