@@ -17,6 +17,12 @@
 
 #include "to_omf.h"
 
+
+
+
+bool flag_v = false;
+const char *outfile = nullptr;
+
 /*
 
 In theory, exports could be handled by 
@@ -568,7 +574,8 @@ void process_obj(FILE *f, bool save) {
 
 
 	if (save) {
-		FILE *out = fopen("out.omf", "wb");
+		if (!outfile) outfile = "out.omf";
+		FILE *out = fopen(outfile, "wb");
 		int segno = 0;
 		for (auto &seg : Segments) {
 			if (!seg.omf.empty())
@@ -618,7 +625,7 @@ void process_lib(FILE *f) {
 		reset();
 	}
 
-	// library segment consists of 3 lcsont records:
+	// library segment consists of 3 lconst records:
 	// 1. filenames
 	// - { uint16_t fileno, pstring name}*
 	// 2. symbol table
@@ -673,7 +680,8 @@ void process_lib(FILE *f) {
 	// lconst + end + segment header overhead.
 	long address = 5 * 3 + 1 + 62 + file_names.size() + symbol_names.size() + symbol_count * 12;
 
-	FILE *out = fopen("out.lib", "wb");
+	if (!outfile) outfile = "out.lib";
+	FILE *out = fopen(outfile, "wb");
 	fseek(out, address, SEEK_SET);
 
 	for (const auto &f : Files) {
@@ -714,21 +722,27 @@ void show_usage(int ex) {
 	exit(ex);
 }
 
+
 int main(int argc, char **argv) {
 
 
-	const char *outfile = NULL;
 	int c;
 	FILE *f;
 
 
 	while ((c = getopt(argc, argv, "o:vh")) != -1) {
 		switch(c) {
+			case 'h':
+				show_usage(0);
+				break;
+			case 'v':
+				flag_v = true;
+				break;
 			case 'o':
 				outfile = optarg;
 				break;
 			default:
-				show_usage(0);
+				show_usage(1);
 		}
 	}
 

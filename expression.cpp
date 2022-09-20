@@ -45,11 +45,22 @@
 #define OMF_LAB_COUNT 0x86
 #define OMF_REL 0x87
 
+static bool is_sym_plus_literal(const expr_vector &ev, int ix) {
+	if (ev[ix].op != EXPR_PLUS) return false;
+	int l = ev[ix].value >> 16;
+	int r = ev[ix].value & 0xffff;
+
+	if (ev[l].op == EXPR_SYMBOL && ev[r].op == EXPR_LITERAL) return true;
+	if (ev[r].op == EXPR_SYMBOL && ev[l].op == EXPR_LITERAL) return true;
+
+	return false;
+}
 
 static bool simplify_expression_helper(expr_vector &ev, int ix) {
 
 	auto &e = ev[ix];
 
+#if 0
 	if (e.op == EXPR_PLUS) {
 		auto &l = ev[e.value >> 16];
 		auto &r = ev[e.value & 0xffff];
@@ -63,6 +74,7 @@ static bool simplify_expression_helper(expr_vector &ev, int ix) {
 			return true;
 		}
 	}
+#endif
 
 	if ((e.op & EXPR_TYPEMASK) == EXPR_UNARYNODE) {
 		return simplify_expression_helper(ev, e.value);
@@ -79,6 +91,8 @@ static bool simplify_expression_helper(expr_vector &ev, int ix) {
 
 		if (e.op == EXPR_PLUS) {
 
+			if (ev[l].op == EXPR_LITERAL) std::swap(l, r);
+
 			auto &ll = ev[l];
 			auto &rr = ev[r];
 
@@ -90,6 +104,7 @@ static bool simplify_expression_helper(expr_vector &ev, int ix) {
 				rr.op = EXPR_NULL;
 				delta = true;
 			}
+
 		}
 
 		if (e.op == EXPR_MINUS) {
@@ -222,8 +237,6 @@ static void convert_expression_helper(const expr_vector &ev, int ix, std::vector
 
 
 	if ((op & EXPR_TYPEMASK) == EXPR_LEAFNODE) {
-		unsigned seg = 0;
-		long offset = 0;
 		switch (op) {
 			case EXPR_LITERAL:
 				push_back_8(omf, OMF_ABS);
@@ -241,7 +254,7 @@ static void convert_expression_helper(const expr_vector &ev, int ix, std::vector
 					push_back_32(omf, e.value);
 				} else {
 					push_back_8(omf, OMF_LAB);
-					push_back_string(omf, Segments[seg].name);
+					push_back_string(omf, Segments[e.section].name);
 					if (e.value) {
 						push_back_8(omf, OMF_ABS);
 						push_back_32(omf, e.value);
