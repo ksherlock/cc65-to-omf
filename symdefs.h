@@ -31,7 +31,7 @@
 /*                                                                           */
 /*****************************************************************************/
 
-
+// In accordance with restricion #2., this file may have been altered.
 
 /* Object file tags for imports and exports */
 

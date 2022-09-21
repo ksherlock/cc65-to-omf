@@ -31,7 +31,7 @@
 /*                                                                           */
 /*****************************************************************************/
 
-
+// In accordance with restricion #2., this file may have been altered.
 
 #ifndef FILEIO_H
 #define FILEIO_H

@@ -31,7 +31,7 @@
 /*                                                                           */
 /*****************************************************************************/
 
-
+// In accordance with restricion #2., this file may have been altered.
 
 #ifndef FRAGDEFS_H
 #define FRAGDEFS_H
