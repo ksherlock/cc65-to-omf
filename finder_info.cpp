@@ -29,7 +29,8 @@
 #endif
 
 #include <string>
-#include <stdint.h>
+#include <cstring>
+#include <cstdint>
 
 #ifndef XATTR_FINDERINFO_NAME
 #define XATTR_FINDERINFO_NAME "com.apple.FinderInfo"
