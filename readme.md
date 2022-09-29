@@ -15,4 +15,4 @@ Why?  The original idea was to use ORCA/M or MPW Asm IIgs with
 
 ## Warning
 
-cc65 object files allow you to import symbol then export it under a different name (and possibly as part of a larger expression).  This can (as of September 2022) cause problems with ORCA Linker.  Apple's linker (for APW or MPW) handles them better but there may still be issues.
+cc65 object files allow you to import symbol then export it under a different name (and possibly as part of a larger expression).  ORCA/Linker 2.1.0 (or newer) is recommended as older versions won't properly evaluate them. Apple's linker (for APW or MPW) handles them better but there may still be issues. 
