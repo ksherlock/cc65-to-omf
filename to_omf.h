@@ -80,6 +80,8 @@ void convert_gequ(const std::string &name, const expr_vector &ev, std::vector<ui
 
 expr_vector read_expr(FILE *f);
 
+int set_prodos_file_type(const std::string &path, uint16_t fileType, uint32_t auxType);
+
 
 // #define EXPR_SECTION_REL 0x87
 #endif

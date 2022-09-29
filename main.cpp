@@ -583,6 +583,7 @@ void process_obj(FILE *f, bool save) {
 				save_omf_segment(out, seg, ++segno);
 		}
 		fclose(out);
+		set_prodos_file_type(outfile, 0xb1, 0x0000);
 	}
 }
 
@@ -714,6 +715,7 @@ void process_lib(FILE *f) {
 	fseek(out, 0, SEEK_SET);
 	save_omf_lib_header(out, file_names, symbol_table, symbol_names);
 	fclose(out);
+	set_prodos_file_type(outfile, 0xb2, 0x0000);
 }
 
 
